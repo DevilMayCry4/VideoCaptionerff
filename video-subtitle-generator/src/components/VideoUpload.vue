@@ -24,6 +24,23 @@
       <button v-if="selectedFiles.length" class="ant-btn ant-btn-primary" style="margin-left:8px;" @click="uploadAllFromFolder">上传全部</button>
     </div>
 
+    <div class="server-files" style="margin-top:16px;">
+      <strong>服务器已有文件：</strong>
+      <div v-if="!serverFiles.length" style="color:#999;">（无可用视频）</div>
+      <ul v-else>
+        <li v-for="f in serverFiles" :key="f.filename" style="margin:6px 0;">
+          <label>
+            <input type="checkbox" :value="f.filename" v-model="selectedServer" />
+            {{ f.filename }} ({{ (f.size/1024/1024).toFixed(2) }} MB)
+          </label>
+        </li>
+      </ul>
+      <div style="margin-top:8px;">
+        <button class="ant-btn" @click="fetchServerFiles">刷新列表</button>
+        <button class="ant-btn ant-btn-primary" style="margin-left:8px;" @click="processSelectedServerFiles" :disabled="!selectedServer.length">处理选中</button>
+      </div>
+    </div>
+
     <div v-if="selectedFiles.length" class="selected-list" style="margin-top:12px;">
       <strong>已选文件：</strong>
       <ul>
@@ -47,6 +64,7 @@
 
 <script setup lang="ts">
 import { ref, computed } from 'vue'
+import { onMounted } from 'vue'
 import { InboxOutlined } from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
 import { useVideoStore } from '@/stores/videoStore'
@@ -62,6 +80,25 @@ const uploadMessage = ref('')
 // 目录选择与批量上传相关
 const selectedFiles = ref<File[]>([])
 const folderInput = ref<HTMLInputElement | null>(null)
+// 服务器端已上传文件列表
+const serverFiles = ref<Array<{filename:string; size:number; path:string;}>>([])
+const selectedServer = ref<string[]>([])
+
+const fetchServerFiles = async () => {
+  try {
+    const res = await fetch('/api/uploads')
+    const data = await res.json()
+    if (data && data.success && data.data && data.data.files) {
+      serverFiles.value = data.data.files.map((f: any) => ({ filename: f.filename, size: f.size, path: f.path }))
+    }
+  } catch (err) {
+    console.error('获取服务器文件失败', err)
+  }
+}
+
+onMounted(() => {
+  fetchServerFiles()
+})
 
 const triggerFolderSelect = () => {
   folderInput.value?.click()
@@ -110,6 +147,37 @@ const uploadAllFromFolder = async () => {
   uploading.value = false
   selectedFiles.value = []
   message.success('文件夹中的视频处理完成')
+}
+
+const processSelectedServerFiles = async () => {
+  if (!selectedServer.value.length) {
+    message.warn('请先选择要处理的服务器文件')
+    return
+  }
+  uploading.value = true
+  for (const filename of selectedServer.value) {
+    try {
+      const resp = await fetch('/api/process-existing', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filename })
+      })
+      const data = await resp.json()
+      if (data && data.success && data.data && data.data.task_id) {
+        const fakeFile = new File([], filename)
+        const taskId = videoStore.addTask(fakeFile)
+        videoStore.updateTask(taskId, { status: 'processing', message: '已开始后台处理' })
+      } else {
+        message.error(`启动处理失败: ${filename}`)
+      }
+    } catch (err) {
+      console.error('处理失败', err)
+      message.error(`启动处理失败: ${filename}`)
+    }
+  }
+  uploading.value = false
+  // 刷新服务器文件列表
+  fetchServerFiles()
 }
 
 const acceptedFormats = '.mp4,.mov,.avi,.wmv'

@@ -57,6 +57,7 @@ app = create_app()
 file_service = FileService()
 audio_service = AudioService()
 subtitle_service = SubtitleService()
+import threading
 
 @app.route('/api/upload', methods=['POST'])
 def upload_file():
@@ -306,6 +307,108 @@ def get_status_message(status: str) -> str:
         'failed': '处理失败'
     }
     return status_messages.get(status, '未知状态')
+
+
+@app.route('/api/uploads', methods=['GET'])
+def list_uploads():
+    """
+    列出服务器上传目录下的视频文件
+    """
+    try:
+        info = file_service.list_uploaded_videos()
+        if 'error' in info:
+            return error_response('LIST_FAILED', info.get('error', '列举失败'))
+        return success_response(info)
+    except Exception as e:
+        logger.error(f"列出上传文件失败: {str(e)}")
+        return error_response('INTERNAL_ERROR', '列出上传文件失败')
+
+
+def _process_task_background(task_id: str, file_path: str):
+    """后台执行提取音频与生成字幕流程（同步调用服务）。"""
+    try:
+        # 更新记录状态
+        record = ProcessRecord.query.get(task_id)
+        if not record:
+            logger.error(f"找不到记录 {task_id} 用于处理")
+            return
+
+        record.status = 'extracting'
+        record.progress = 20
+        db.session.commit()
+
+        # 提取音频
+        audio_filename = f"{task_id}.wav"
+        audio_path = os.path.join(audio_service.audio_folder, audio_filename)
+        audio_service.extract_audio(file_path, audio_path)
+
+        record.audio_path = audio_path
+        record.status = 'transcribing'
+        record.progress = 60
+        db.session.commit()
+
+        # 生成字幕
+        subtitle_result = subtitle_service.generate_subtitle(audio_path, task_id)
+
+        record.subtitle_path = subtitle_result.get('subtitle_path')
+        record.status = 'completed'
+        record.progress = 100
+        db.session.commit()
+        logger.info(f"后台处理完成: {task_id}")
+
+    except Exception as e:
+        logger.error(f"后台处理失败 {task_id}: {str(e)}")
+        if 'record' in locals() and record:
+            record.status = 'failed'
+            record.error_message = str(e)
+            db.session.commit()
+
+
+@app.route('/api/process-existing', methods=['POST'])
+def process_existing():
+    """
+    基于服务器上已存在的上传文件启动处理流程。
+    请求体: { "filename": "xxx.mp4" } 或 { "file_path": "/absolute/path" }
+    返回: task_id
+    """
+    try:
+        data = request.get_json() or {}
+        filename = data.get('filename')
+        file_path = data.get('file_path')
+
+        if not filename and not file_path:
+            return error_response('INVALID_REQUEST', '缺少 filename 或 file_path')
+
+        if filename:
+            file_path = os.path.join(file_service.upload_folder, filename)
+
+        if not os.path.exists(file_path):
+            return error_response('FILE_NOT_FOUND', '指定的文件在服务端不存在')
+
+        # 创建任务记录
+        task_id = str(uuid.uuid4())
+        original_filename = os.path.basename(file_path)
+
+        record = ProcessRecord(
+            id=task_id,
+            original_filename=original_filename,
+            stored_filename=original_filename,
+            file_path=file_path,
+            status='pending',
+            progress=0
+        )
+        db.session.add(record)
+        db.session.commit()
+
+        # 在后台线程中处理，避免阻塞API
+        t = threading.Thread(target=_process_task_background, args=(task_id, file_path), daemon=True)
+        t.start()
+
+        return success_response({'task_id': task_id, 'message': '处理已在后台开始'})
+
+    except Exception as e:
+        logger.error(f"启动已存在文件处理失败: {str(e)}")
+        return error_response('INTERNAL_ERROR', '启动处理失败')
 
 @app.errorhandler(413)
 def request_entity_too_large(error):

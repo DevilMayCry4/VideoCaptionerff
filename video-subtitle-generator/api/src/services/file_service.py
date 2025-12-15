@@ -229,3 +229,38 @@ class FileService:
                 'error': str(e),
                 'upload_folder': self.upload_folder
             }
+
+    def list_uploaded_videos(self) -> Dict[str, Any]:
+        """
+        列举上传目录下的视频文件（按扩展名过滤）
+
+        Returns:
+            包含文件列表及其元信息的字典
+        """
+        try:
+            allowed_ext = {'.mp4', '.mov', '.avi', '.wmv'}
+            files = []
+            for entry in os.listdir(self.upload_folder):
+                full = os.path.join(self.upload_folder, entry)
+                if os.path.isfile(full):
+                    _, ext = os.path.splitext(entry)
+                    if ext.lower() in allowed_ext:
+                        try:
+                            stat = os.stat(full)
+                            files.append({
+                                'filename': entry,
+                                'path': full,
+                                'size': stat.st_size,
+                                'modified_at': stat.st_mtime
+                            })
+                        except OSError:
+                            continue
+
+            return {
+                'upload_folder': self.upload_folder,
+                'total_files': len(files),
+                'files': sorted(files, key=lambda x: x['filename'])
+            }
+        except Exception as e:
+            logger.error(f"列举上传文件失败: {str(e)}")
+            return {'error': str(e), 'upload_folder': self.upload_folder}
