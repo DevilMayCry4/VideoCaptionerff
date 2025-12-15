@@ -49,8 +49,8 @@
     </div>
 
     <div v-if="uploading" class="upload-progress">
-      <a-progress 
-        :percent="uploadPercent" 
+      <a-progress
+        :percent="uploadPercent"
         :status="uploadStatus"
         :stroke-color="{
           '0%': '#108ee9',
@@ -63,7 +63,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref } from 'vue'
 import { onMounted } from 'vue'
 import { InboxOutlined } from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
@@ -81,15 +81,45 @@ const uploadMessage = ref('')
 const selectedFiles = ref<File[]>([])
 const folderInput = ref<HTMLInputElement | null>(null)
 // 服务器端已上传文件列表
-const serverFiles = ref<Array<{filename:string; size:number; path:string;}>>([])
+interface ServerFile {
+  filename: string;
+  size: number;
+  path: string;
+  modified_at?: number;
+}
+interface ListUploadsData {
+  upload_folder?: string;
+  total_files?: number;
+  files: ServerFile[];
+}
+interface ListUploadsResponse {
+  code: number | string;
+  message: string;
+  data: ListUploadsData | null;
+}
+type UploadStatus = 'uploading' | 'done' | 'error';
+interface UploadFileInfo {
+  status: UploadStatus;
+  percent?: number;
+  originFileObj?: File;
+}
+interface UploadChangeInfo {
+  file: UploadFileInfo;
+}
+const serverFiles = ref<ServerFile[]>([])
 const selectedServer = ref<string[]>([])
 
-const fetchServerFiles = async () => {
+/**
+ * 获取服务器端已上传的视频文件列表
+ * 调用后端接口以获取由 list_uploaded_videos 返回的数据
+ * @returns Promise<void>
+ */
+const fetchServerFiles = async (): Promise<void> => {
   try {
     const res = await fetch('/api/uploads')
-    const data = await res.json()
-    if (data && data.success && data.data && data.data.files) {
-      serverFiles.value = data.data.files.map((f: any) => ({ filename: f.filename, size: f.size, path: f.path }))
+    const data: ListUploadsResponse = await res.json()
+    if (data && data.code === 0 && data.data && Array.isArray(data.data.files)) {
+      serverFiles.value = data.data.files
     }
   } catch (err) {
     console.error('获取服务器文件失败', err)
@@ -122,7 +152,7 @@ const handleFolderSelect = (e: Event) => {
   }
 
   selectedFiles.value = valid
-  message.success(`已选中 ${valid.length} 个视频文件`) 
+  message.success(`已选中 ${valid.length} 个视频文件`)
 }
 
 const uploadAllFromFolder = async () => {
@@ -162,8 +192,8 @@ const processSelectedServerFiles = async () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ filename })
       })
-      const data = await resp.json()
-      if (data && data.success && data.data && data.data.task_id) {
+      const data: { code: number | string; data?: { task_id?: string } } = await resp.json()
+      if (data && data.code === 0 && data.data && data.data.task_id) {
         const fakeFile = new File([], filename)
         const taskId = videoStore.addTask(fakeFile)
         videoStore.updateTask(taskId, { status: 'processing', message: '已开始后台处理' })
@@ -187,26 +217,32 @@ const beforeUpload = (file: File) => {
   // 验证文件格式
   const allowedTypes = ['video/mp4', 'video/quicktime', 'video/x-msvideo', 'video/x-ms-wmv']
   const allowedExtensions = ['.mp4', '.mov', '.avi', '.wmv']
-  
+
   const fileExtension = file.name.toLowerCase().substring(file.name.lastIndexOf('.'))
-  
+
   if (!allowedTypes.includes(file.type) && !allowedExtensions.includes(fileExtension)) {
     message.error('不支持的文件格式，请选择 MP4、MOV、AVI 或 WMV 格式的视频文件')
     return false
   }
-  
+
   // 验证文件大小
   if (file.size > maxFileSize) {
     message.error('文件大小超过 500MB 限制')
     return false
   }
-  
+
   return true
 }
 
-const handleChange = (info: any) => {
+/**
+ * 处理上传组件的变更事件
+ * 根据文件状态更新上传进度与任务队列
+ * @param info 上传变更信息，包含当前文件状态与进度
+ * @returns void
+ */
+const handleChange = (info: UploadChangeInfo): void => {
   const status = info.file.status
-  
+
   if (status === 'uploading') {
     uploading.value = true
     uploadPercent.value = info.file.percent || 0
@@ -216,15 +252,22 @@ const handleChange = (info: any) => {
     uploadPercent.value = 100
     uploadStatus.value = 'success'
     uploadMessage.value = '上传成功，开始处理...'
-    
+
     // 添加到任务队列
-    const taskId = videoStore.addTask(info.file.originFileObj)
-    
+    const fileObj = info.file.originFileObj
+    if (!fileObj) {
+      uploading.value = false
+      uploadStatus.value = 'exception'
+      uploadMessage.value = '找不到源文件对象'
+      return
+    }
+    const taskId = videoStore.addTask(fileObj)
+
     // 模拟上传完成后的处理
     setTimeout(() => {
-      startProcessing(taskId, info.file.originFileObj)
+      startProcessing(taskId, fileObj)
     }, 1000)
-    
+
   } else if (status === 'error') {
     uploading.value = false
     uploadStatus.value = 'exception'
@@ -242,19 +285,19 @@ const startProcessing = async (taskId: string, file: File) => {
     // 创建 FormData
     const formData = new FormData()
     formData.append('file', file)
-    
+
     // 模拟上传进度
     uploadMessage.value = '正在发送到服务器...'
-    
+
     // 这里应该调用实际的上传API
     // const response = await fetch('/api/upload', {
     //   method: 'POST',
     //   body: formData
     // })
-    
+
     // 模拟处理进度
     await simulateProcessing(taskId)
-    
+
   } catch (error) {
     console.error('处理失败:', error)
     videoStore.updateTask(taskId, {
@@ -277,7 +320,7 @@ const simulateProcessing = async (taskId: string) => {
     { status: 'transcribing' as const, progress: 60, message: '正在生成字幕...', delay: 5000 },
     { status: 'completed' as const, progress: 100, message: '处理完成！', delay: 1000 }
   ]
-  
+
   for (const step of steps) {
     await new Promise(resolve => setTimeout(resolve, step.delay))
     videoStore.updateTask(taskId, {
@@ -288,7 +331,7 @@ const simulateProcessing = async (taskId: string) => {
     uploadPercent.value = step.progress
     uploadMessage.value = step.message
   }
-  
+
   // 模拟字幕内容
   videoStore.updateTask(taskId, {
     subtitleContent: `1
