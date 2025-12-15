@@ -4,7 +4,7 @@
       v-model:fileList="fileList"
       :before-upload="beforeUpload"
       :accept="acceptedFormats"
-      :multiple="false"
+      :multiple="true"
       @change="handleChange"
       @drop="handleDrop"
       class="upload-area"
@@ -17,6 +17,19 @@
         支持 {{ acceptedFormats }} 格式，文件大小不超过 500MB
       </p>
     </a-upload-dragger>
+
+    <div class="folder-select" style="margin-top:16px;">
+      <button class="ant-btn" @click.prevent="triggerFolderSelect">选择文件夹</button>
+      <input ref="folderInput" type="file" webkitdirectory directory multiple style="display:none" @change="handleFolderSelect" />
+      <button v-if="selectedFiles.length" class="ant-btn ant-btn-primary" style="margin-left:8px;" @click="uploadAllFromFolder">上传全部</button>
+    </div>
+
+    <div v-if="selectedFiles.length" class="selected-list" style="margin-top:12px;">
+      <strong>已选文件：</strong>
+      <ul>
+        <li v-for="(f, idx) in selectedFiles" :key="idx">{{ f.name }} ({{ (f.size/1024/1024).toFixed(2) }} MB)</li>
+      </ul>
+    </div>
 
     <div v-if="uploading" class="upload-progress">
       <a-progress 
@@ -45,6 +58,59 @@ const uploading = ref(false)
 const uploadPercent = ref(0)
 const uploadStatus = ref<'active' | 'success' | 'exception'>('active')
 const uploadMessage = ref('')
+
+// 目录选择与批量上传相关
+const selectedFiles = ref<File[]>([])
+const folderInput = ref<HTMLInputElement | null>(null)
+
+const triggerFolderSelect = () => {
+  folderInput.value?.click()
+}
+
+const handleFolderSelect = (e: Event) => {
+  const input = e.target as HTMLInputElement
+  if (!input.files) return
+  const files = Array.from(input.files)
+
+  // 过滤符合的视频文件
+  const allowedExtensions = ['.mp4', '.mov', '.avi', '.wmv']
+  const valid = files.filter(f => {
+    const ext = f.name.toLowerCase().substring(f.name.lastIndexOf('.'))
+    return allowedExtensions.includes(ext) && f.size <= maxFileSize
+  })
+
+  if (!valid.length) {
+    message.warn('未发现符合条件的视频文件（或文件过大）。')
+    return
+  }
+
+  selectedFiles.value = valid
+  message.success(`已选中 ${valid.length} 个视频文件`) 
+}
+
+const uploadAllFromFolder = async () => {
+  if (!selectedFiles.value.length) return
+  uploading.value = true
+  for (const file of selectedFiles.value) {
+    const ok = beforeUpload(file)
+    if (!ok) {
+      videoStore.updateTask(videoStore.addTask(file), { status: 'failed', message: '文件验证失败' })
+      continue
+    }
+
+    const taskId = videoStore.addTask(file)
+    uploadMessage.value = `正在上传 ${file.name}`
+    uploadPercent.value = 0
+    try {
+      await startProcessing(taskId, file)
+    } catch (err) {
+      console.error('单文件处理失败', err)
+    }
+  }
+  uploading.value = false
+  selectedFiles.value = []
+  message.success('文件夹中的视频处理完成')
+}
 
 const acceptedFormats = '.mp4,.mov,.avi,.wmv'
 const maxFileSize = 500 * 1024 * 1024 // 500MB
