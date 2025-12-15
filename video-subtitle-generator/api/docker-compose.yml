@@ -1,0 +1,58 @@
+version: '3.8'
+
+services:
+  # Flask后端服务
+  backend:
+    build: .
+    container_name: video-subtitle-backend
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./uploads:/app/uploads
+      - ./audio:/app/audio
+      - ./subtitles:/app/subtitles
+      - ./logs:/app/logs
+    environment:
+      - FLASK_ENV=production
+      - DATABASE_URL=sqlite:///app/video_subtitle.db
+      - REDIS_HOST=redis
+      - WHISPER_MODEL=base
+    depends_on:
+      - redis
+    restart: unless-stopped
+    networks:
+      - app-network
+
+  # Redis服务（用于异步任务）
+  redis:
+    image: redis:7-alpine
+    container_name: video-subtitle-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+    networks:
+      - app-network
+
+  # 前端服务（可选）
+  frontend:
+    build: 
+      context: ../
+      dockerfile: Dockerfile.frontend
+    container_name: video-subtitle-frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - app-network
+
+volumes:
+  redis-data:
+    driver: local
+
+networks:
+  app-network:
+    driver: bridge

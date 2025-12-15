@@ -1,0 +1,35 @@
+# Flask Web框架
+Flask==2.3.3
+flask-cors==4.0.0
+flask-sqlalchemy==3.0.5
+
+# 媒体处理
+ffmpeg-python==0.2.0
+
+# AI模型
+faster-whisper==1.0.1
+
+# 字幕处理
+srt==3.5.3
+
+# 环境配置
+python-dotenv==1.0.0
+
+# 异步任务（可选）
+celery==5.3.1
+redis==4.6.0
+
+# 服务器
+gunicorn==21.2.0
+
+# 数据库
+sqlalchemy==2.0.21
+
+# 工具库
+werkzeug==2.3.7
+
+# 测试框架
+pytest==7.4.2
+pytest-cov==4.1.0
+pytest-mock==3.11.1
+unittest2==1.1.0
