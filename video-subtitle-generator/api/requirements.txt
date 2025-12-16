@@ -27,6 +27,8 @@ sqlalchemy==2.0.21
 
 # 工具库
 werkzeug==2.3.7
+tqdm==4.66.1
+
 
 # 测试框架
 pytest==7.4.2
