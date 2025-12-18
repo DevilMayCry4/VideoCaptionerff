@@ -36,8 +36,8 @@ class DeepLWebTranslator:
     """DeepL 网页版翻译器"""
     
     def __init__(self, args):
-        self.input_file = args.input_file
-        self.output_file = args.output_file
+        self.input_file = None # 初始化时不指定文件
+        self.output_file = None
         self.batch_size = 1 # 网页版建议每次只翻少量文本，或者合并成一段不超过限制的文本
         self.bilingual = args.bilingual
         self.headless = not args.show_browser
@@ -48,6 +48,13 @@ class DeepLWebTranslator:
         self.browser = None
         self.context = None
         self.page = None
+
+    def __enter__(self):
+        self.start_browser()
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close_browser()
 
     def start_browser(self):
         """启动浏览器"""
@@ -155,8 +162,17 @@ class DeepLWebTranslator:
                 pass
             return text # 失败返回原文
 
+    def process_file(self, input_path: str, output_path: str = None):
+        """处理单个文件"""
+        self.input_file = input_path
+        self.output_file = output_path
+        self.process()
+
     def process(self):
-        """执行翻译流程"""
+        """执行翻译流程 (内部方法)"""
+        if not self.input_file:
+            return
+
         logger.info(f"正在读取字幕文件: {self.input_file}")
         subs = self.load_subtitles()
         
@@ -257,8 +273,6 @@ class DeepLWebTranslator:
         pbar.update(len(buffer_subs))
         pbar.close()
         
-        self.close_browser()
-        
         # 重组字幕
         for sub in subs:
             trans = translated_map.get(sub.index, "")
@@ -287,17 +301,54 @@ class DeepLWebTranslator:
             
         logger.info(f"翻译完成: {output_path}")
 
+def process_batch(args):
+    """批量处理"""
+    input_path = args.input_path
+    
+    # 获取待处理文件列表
+    files_to_process = []
+    if os.path.isfile(input_path):
+        files_to_process.append(input_path)
+    elif os.path.isdir(input_path):
+        for root, _, files in os.walk(input_path):
+            for file in files:
+                if file.lower().endswith('.srt') and not file.endswith('_chs_web.srt'):
+                    files_to_process.append(os.path.join(root, file))
+    
+    if not files_to_process:
+        logger.error(f"未找到 SRT 文件: {input_path}")
+        return
+
+    logger.info(f"共找到 {len(files_to_process)} 个文件待处理")
+    
+    # 使用上下文管理器复用浏览器
+    with DeepLWebTranslator(args) as translator:
+        for i, file_path in enumerate(files_to_process):
+            logger.info(f"[{i+1}/{len(files_to_process)}] 处理: {file_path}")
+            try:
+                # 如果指定了输出文件且输入是单个文件，则使用指定的输出路径
+                # 如果是目录，则自动生成输出路径
+                output_file = args.output_file if (len(files_to_process) == 1 and args.output_file) else None
+                translator.process_file(file_path, output_file)
+            except Exception as e:
+                logger.error(f"处理文件失败 {file_path}: {e}")
+                # 出错后尝试重启浏览器上下文，防止页面崩溃影响下一个
+                try:
+                    translator.page.reload()
+                except:
+                    pass
+
 def main():
     parser = argparse.ArgumentParser(description="DeepL 网页版字幕翻译工具 (Playwright)")
-    parser.add_argument("input_file", help="输入 SRT 文件")
-    parser.add_argument("--output_file", "-o", help="输出文件")
+    parser.add_argument("input_path", help="输入 SRT 文件或目录路径")
+    parser.add_argument("--output_file", "-o", help="输出文件 (仅处理单个文件时有效)")
     parser.add_argument("--bilingual", action="store_true", help="输出双语字幕")
     parser.add_argument("--show_browser", action="store_true", help="显示浏览器窗口 (调试用)")
     
     args = parser.parse_args()
     
-    if not os.path.exists(args.input_file):
-        print(f"文件不存在: {args.input_file}")
+    if not os.path.exists(args.input_path):
+        print(f"路径不存在: {args.input_path}")
         sys.exit(1)
         
     setup_logging()
@@ -306,9 +357,7 @@ def main():
     if not os.path.exists(os.path.expanduser("~/.cache/ms-playwright")) and not os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
          print("提示: 首次运行可能需要安装浏览器内核，请执行: playwright install chromium")
     
-    translator = DeepLWebTranslator(args)
-    translator.process()
+    process_batch(args)
 
 if __name__ == "__main__":
-    main()
     main()
