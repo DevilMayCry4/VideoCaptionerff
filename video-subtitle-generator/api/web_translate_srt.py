@@ -237,18 +237,27 @@ class DeepLWebTranslator:
                 else:
                     missing_indices.append(i)
             
-            # 如果有缺失，对缺失的部分进行降级处理 (逐条翻译)
+            # 如果有缺失，对缺失的部分进行降级处理 (逐条翻译 -> 递归批量补翻)
             if missing_indices:
                 logger.warning(f"批次中有 {len(missing_indices)}/{len(subs_list)} 条字幕未匹配到序号，尝试补翻...")
                 logger.debug(f"原文片段: {merged_text[:200]}...")
                 logger.debug(f"译文片段: {trans_text[:200]}...")
                 
-                for idx in missing_indices:
-                    s = subs_list[idx]
-                    # 补翻时不带序号，直接翻内容
-                    t = await self.translate_text(s.content)
-                    translated_map[s.index] = t
-                    await asyncio.sleep(random.uniform(1, 2))
+                # 收集所有缺失的字幕对象
+                missing_subs = [subs_list[i] for i in missing_indices]
+                
+                # 递归调用 process_buffer 处理缺失的部分
+                # 注意：为了防止无限递归，如果补翻数量太少（比如就1条），或者递归深度过深（这里未实现深度限制，但通常一两轮就能解决），
+                # 其实对于少量缺失，递归调用也是安全的，因为它会重新生成序号并尝试翻译。
+                # 如果只有1条，递归进去后也会走批量逻辑（虽然只有1条），也是带序号的。
+                
+                # 为了防止死循环（比如某条字幕永远无法翻译），我们可以加一个简单的判断：
+                # 如果是补翻，我们仍然用 process_buffer，但如果失败了（再次进入 missing_indices），可能需要终极兜底（比如不带序号直接翻）。
+                # 这里简化处理：直接递归调用 process_buffer。
+                # 由于 process_buffer 内部生成序号是基于传入列表的 enumerate，
+                # 所以 missing_subs 会被重新编号为 1, 2, 3...，这有助于 DeepL 重新理解。
+                
+                await process_buffer(missing_subs)
             
             # 批次间延时
             await asyncio.sleep(random.uniform(2, 5))

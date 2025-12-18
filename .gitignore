@@ -8,3 +8,4 @@ video-subtitle-generator/api/src/services/__pycache__/file_service.cpython-310.p
 video-subtitle-generator/api/src/services/__pycache__/subtitle_service.cpython-310.pyc
 video-subtitle-generator/api/src/utils/__pycache__/response.cpython-310.pyc
 video-subtitle-generator/api/src/utils/__pycache__/validators.cpython-310.pyc
+video-subtitle-generator/api/input_chs_web.srt
