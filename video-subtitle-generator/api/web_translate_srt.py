@@ -42,7 +42,7 @@ class DeepLWebTranslator:
         self.batch_size = 1 # 网页版建议每次只翻少量文本，或者合并成一段不超过限制的文本
         self.bilingual = args.bilingual
         self.headless = not args.show_browser
-        self.max_chars = 3500 # 用户要求4000，保守一点设为3500，留出符号的空间
+        self.max_chars = 1500 # 用户要求控制在1500字以内
         
         # 浏览器实例
         self.playwright = None
@@ -69,8 +69,10 @@ class DeepLWebTranslator:
         
         # 预加载 DeepL 页面，设置语言方向
         try:
-            # 直接进入 JA -> ZH 模式
-            await self.page.goto("https://www.deepl.com/zh/translator#ja/zh/")
+            # 根据 t.html 中的 SEO 早期文本 (seoEarlyTexts)，日语是 'ja'，中文是 'zh'
+            # 构造 URL: https://www.deepl.com/zh/translator#ja/zh/
+            # #ja/zh/ 表示源语言日语，目标语言中文
+            await self.page.goto("https://www.deepl.com/zh")
             # 等待输入框加载 (DeepL 网页版输入框通常是 div[contenteditable])
             await self.page.wait_for_selector("div[contenteditable]", timeout=15000)
             logger.info("DeepL 网页加载成功")
@@ -169,6 +171,12 @@ class DeepLWebTranslator:
         self.output_file = output_path
         await self.process()
 
+    def is_sentence_end(self, text: str) -> bool:
+        """判断是否为句子结束"""
+        # 常见句末标点 (中英文)
+        endings = ('.', '?', '!', ';', '。', '？', '！', '；', '…', '"', '”', '…')
+        return text.strip().endswith(endings)
+
     async def process(self):
         """执行翻译流程 (内部方法)"""
         if not self.input_file:
@@ -189,21 +197,26 @@ class DeepLWebTranslator:
         translated_map = {}
         
         # 内部函数：处理缓冲区
-        async def process_buffer(subs_list):
-            if not subs_list: return
+        # subs_with_idx: List of (global_index, subtitle_object)
+        async def process_buffer(subs_with_idx):
+            if not subs_with_idx: return
             
-            # 1. 构建带【序号+原文】符号的文本
-            # 例如: 【1Hello world】【2How are you】
-            # 使用 batch 内的相对序号 (1, 2, 3...)，方便匹配
+            # 解包
+            subs_list = [item[1] for item in subs_with_idx]
+            
+            # 1. 构建带锚点标记的垂直文本列表
+            # 格式: <1>原文\n<2>原文
+            # 这种格式利用了 DeepL 对列表和 XML 标签的处理能力，极大降低合并风险
             formatted_lines = []
             for i, s in enumerate(subs_list):
                 # 序号从1开始
                 seq_num = i + 1
-                content = s.content.strip().replace(chr(10), ' ')
-                formatted_lines.append(f"【{seq_num}{content}】")
+                # 预处理：去除换行，替换可能干扰 XML 解析的符号
+                content = s.content.strip().replace(chr(10), ' ').replace('<', '&lt;').replace('>', '&gt;')
+                formatted_lines.append(f"<{seq_num}>{content}")
                 
-            # 用户要求不要用换行符分割，直接拼接
-            merged_text = "".join(formatted_lines)
+            # 使用换行符连接，形成清晰的列表结构
+            merged_text = "\n".join(formatted_lines)
             
             logger.info(f"正在翻译批次，包含 {len(subs_list)} 条字幕，共 {len(merged_text)} 字符")
             
@@ -211,29 +224,32 @@ class DeepLWebTranslator:
             trans_text = await self.translate_text(merged_text)
             
             # 3. 解析结果
-            # 使用正则提取【序号+译文】中的内容
-            # 匹配格式: 【数字+内容】
-            matches = re.findall(r'【(\d+)(.*?)】', trans_text, re.DOTALL)
+            # 匹配行首的 <数字>标记
+            # DeepL 有时会在标签后加空格，或者改变标签内的数字格式（较少见）
+            # 正则：匹配 <数字> 及其后的内容，直到行尾或下一个标签前
+            matches = re.findall(r'<(\d+)>(.*?)(?=\n<|\Z)', trans_text, re.DOTALL)
             
             # 转换匹配结果为字典: {序号: 译文}
-            # 注意: 序号是字符串，需要转int
             batch_trans_map = {}
             for seq_str, content in matches:
                 try:
                     seq = int(seq_str)
-                    batch_trans_map[seq] = content.strip()
+                    # 清理译文中的潜在 HTML 转义字符和首尾空白
+                    clean_content = content.strip().replace('&lt;', '<').replace('&gt;', '>')
+                    batch_trans_map[seq] = clean_content
                 except ValueError:
                     continue
 
             # 4. 结果对齐与填充
             # 检查是否所有序号都找到了
-            missing_indices = []
+            missing_indices = [] # 这里存储的是 batch 内的相对索引 (0, 1, 2...)
             for i in range(len(subs_list)):
                 seq_num = i + 1
+                global_idx = subs_with_idx[i][0] # 获取全局索引
+                
                 if seq_num in batch_trans_map:
-                    # 找到了，存入全局 map
-                    s = subs_list[i]
-                    translated_map[s.index] = batch_trans_map[seq_num]
+                    # 找到了，存入全局 map，使用全局索引作为key
+                    translated_map[global_idx] = batch_trans_map[seq_num]
                 else:
                     missing_indices.append(i)
             
@@ -243,36 +259,55 @@ class DeepLWebTranslator:
                 logger.debug(f"原文片段: {merged_text[:200]}...")
                 logger.debug(f"译文片段: {trans_text[:200]}...")
                 
-                # 收集所有缺失的字幕对象
-                missing_subs = [subs_list[i] for i in missing_indices]
+                # 收集所有缺失的 (global_index, sub) 元组
+                missing_subs_with_idx = [subs_with_idx[i] for i in missing_indices]
                 
                 # 递归调用 process_buffer 处理缺失的部分
-                # 注意：为了防止无限递归，如果补翻数量太少（比如就1条），或者递归深度过深（这里未实现深度限制，但通常一两轮就能解决），
-                # 其实对于少量缺失，递归调用也是安全的，因为它会重新生成序号并尝试翻译。
-                # 如果只有1条，递归进去后也会走批量逻辑（虽然只有1条），也是带序号的。
-                
-                # 为了防止死循环（比如某条字幕永远无法翻译），我们可以加一个简单的判断：
-                # 如果是补翻，我们仍然用 process_buffer，但如果失败了（再次进入 missing_indices），可能需要终极兜底（比如不带序号直接翻）。
-                # 这里简化处理：直接递归调用 process_buffer。
-                # 由于 process_buffer 内部生成序号是基于传入列表的 enumerate，
-                # 所以 missing_subs 会被重新编号为 1, 2, 3...，这有助于 DeepL 重新理解。
-                
-                await process_buffer(missing_subs)
-            
-            # 批次间延时
+                await process_buffer(missing_subs_with_idx)
             await asyncio.sleep(random.uniform(2, 5))
 
-        for sub in subs:
-            # 计算长度：内容长度 + 符号长度(2) + 换行符(1)
-            content_len = len(sub.content) + 3
+        # Main loop with smart batching
+        for i, sub in enumerate(subs):
+            content = sub.content.strip().replace('\n', ' ')
+            # content length + separator length (" | ") -> 3 chars
+            content_len = len(content) + 3 
             
+            # Check if adding this subtitle exceeds max_chars
             if buffer_len + content_len > self.max_chars:
-                await process_buffer(buffer_subs)
-                pbar.update(len(buffer_subs))
-                buffer_subs = []
-                buffer_len = 0
+                # Batch is full. Try to optimize split point.
+                # Look backwards for a sentence ending to split at.
+                split_idx = -1
+                
+                # Find last sentence end in buffer
+                # buffer_subs is list of (global_idx, sub)
+                for j in range(len(buffer_subs) - 1, -1, -1):
+                    _, s_sub = buffer_subs[j]
+                    if self.is_sentence_end(s_sub.content):
+                        split_idx = j
+                        break
+                
+                if split_idx != -1 and split_idx < len(buffer_subs) - 1:
+                    # Found a better split point (not at the very end, which is trivial)
+                    # Send up to split point
+                    to_send = buffer_subs[:split_idx+1]
+                    remaining = buffer_subs[split_idx+1:]
+                    
+                    await process_buffer(to_send)
+                    pbar.update(len(to_send))
+                    
+                    # Start new buffer with remaining items + current item
+                    buffer_subs = remaining
+                    # Recalculate length for remaining items
+                    buffer_len = sum(len(s[1].content.strip().replace('\n',' '))+3 for s in buffer_subs)
+                else:
+                    # No better split point found, just send current buffer
+                    await process_buffer(buffer_subs)
+                    pbar.update(len(buffer_subs))
+                    buffer_subs = []
+                    buffer_len = 0
             
-            buffer_subs.append(sub)
+            # Add current subtitle to buffer
+            buffer_subs.append((i, sub))
             buffer_len += content_len
             
         # 处理剩余
@@ -281,8 +316,10 @@ class DeepLWebTranslator:
         pbar.close()
         
         # 重组字幕
-        for sub in subs:
-            trans = translated_map.get(sub.index, "")
+        for i, sub in enumerate(subs):
+            # 使用全局索引获取译文，确保顺序绝对一致
+            # 无论 SRT 序号如何乱序，这里使用的是读取时的列表索引，保证一一对应
+            trans = translated_map.get(i, "")
             if not trans: trans = sub.content
             
             if self.bilingual:
@@ -297,6 +334,10 @@ class DeepLWebTranslator:
                 content=new_content
             ))
             
+        # 安全检查：确保输出数量与输入一致
+        if len(new_subs) != len(subs):
+            logger.error(f"严重错误: 输出字幕数量 ({len(new_subs)}) 与输入 ({len(subs)}) 不一致!")
+        
         # 保存
         output_path = self.output_file
         if not output_path:
