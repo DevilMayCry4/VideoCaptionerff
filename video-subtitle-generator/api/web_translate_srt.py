@@ -12,10 +12,10 @@ import logging
 import time
 import random
 import srt
-import urllib.parse
 from tqdm import tqdm
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 from typing import List
+import re
 
 # 配置日志
 def setup_logging(log_file: str = None):
@@ -41,7 +41,7 @@ class DeepLWebTranslator:
         self.batch_size = 1 # 网页版建议每次只翻少量文本，或者合并成一段不超过限制的文本
         self.bilingual = args.bilingual
         self.headless = not args.show_browser
-        self.max_chars = 1500 # 保守一点，虽然网页版限制是 3000/5000，但太长容易失败
+        self.max_chars = 3500 # 用户要求4000，保守一点设为3500，留出符号的空间
         
         # 浏览器实例
         self.playwright = None
@@ -68,7 +68,7 @@ class DeepLWebTranslator:
             logger.info("DeepL 网页加载成功")
         except Exception as e:
             logger.error(f"无法访问 DeepL: {e}")
-            self.close_browser()
+            # self.close_browser()
             sys.exit(1)
 
     def close_browser(self):
@@ -178,25 +178,63 @@ class DeepLWebTranslator:
         def process_buffer(subs_list):
             if not subs_list: return
             
-            # 合并文本，使用特殊分隔符，DeepL 通常能保留换行，但为了保险，可以用一些特殊符号辅助
-            # 这里直接用换行符，DeepL 对段落处理较好
-            merged_text = "\n".join([s.content.replace('\n', ' ') for s in subs_list])
+            # 1. 构建带【序号+原文】符号的文本
+            # 例如: 【1Hello world】【2How are you】
+            # 使用 batch 内的相对序号 (1, 2, 3...)，方便匹配
+            formatted_lines = []
+            for i, s in enumerate(subs_list):
+                # 序号从1开始
+                seq_num = i + 1
+                content = s.content.strip().replace(chr(10), ' ')
+                formatted_lines.append(f"【{seq_num}{content}】")
+                
+            # 用户要求不要用换行符分割，直接拼接
+            merged_text = "".join(formatted_lines)
             
+            logger.info(f"正在翻译批次，包含 {len(subs_list)} 条字幕，共 {len(merged_text)} 字符")
+            
+            # 2. 发送翻译
             trans_text = self.translate_text(merged_text)
-            trans_lines = trans_text.split('\n')
             
-            # 简单对齐
-            # 如果行数不一致，尝试回退到逐行翻译 (比较慢)
-            if len(trans_lines) != len(subs_list):
-                logger.warning(f"行数不匹配 (原:{len(subs_list)}, 译:{len(trans_lines)})，切换单条模式...")
-                for s in subs_list:
-                    t = self.translate_text(s.content.replace('\n', ' '))
+            # 3. 解析结果
+            # 使用正则提取【序号+译文】中的内容
+            # 匹配格式: 【数字+内容】
+            matches = re.findall(r'【(\d+)(.*?)】', trans_text, re.DOTALL)
+            
+            # 转换匹配结果为字典: {序号: 译文}
+            # 注意: 序号是字符串，需要转int
+            batch_trans_map = {}
+            for seq_str, content in matches:
+                try:
+                    seq = int(seq_str)
+                    batch_trans_map[seq] = content.strip()
+                except ValueError:
+                    continue
+
+            # 4. 结果对齐与填充
+            # 检查是否所有序号都找到了
+            missing_indices = []
+            for i in range(len(subs_list)):
+                seq_num = i + 1
+                if seq_num in batch_trans_map:
+                    # 找到了，存入全局 map
+                    s = subs_list[i]
+                    translated_map[s.index] = batch_trans_map[seq_num]
+                else:
+                    missing_indices.append(i)
+            
+            # 如果有缺失，对缺失的部分进行降级处理 (逐条翻译)
+            if missing_indices:
+                logger.warning(f"批次中有 {len(missing_indices)}/{len(subs_list)} 条字幕未匹配到序号，尝试补翻...")
+                logger.debug(f"原文片段: {merged_text[:200]}...")
+                logger.debug(f"译文片段: {trans_text[:200]}...")
+                
+                for idx in missing_indices:
+                    s = subs_list[idx]
+                    # 补翻时不带序号，直接翻内容
+                    t = self.translate_text(s.content)
                     translated_map[s.index] = t
-                    # 随机延时防封
-                    time.sleep(random.uniform(1, 3))
-            else:
-                for idx, s in enumerate(subs_list):
-                    translated_map[s.index] = trans_lines[idx]
+                    time.sleep(random.uniform(1, 2))
             
             # 批次间延时
             time.sleep(random.uniform(2, 5))
@@ -272,4 +310,5 @@ def main():
     translator.process()
 
 if __name__ == "__main__":
+    main()
     main()
