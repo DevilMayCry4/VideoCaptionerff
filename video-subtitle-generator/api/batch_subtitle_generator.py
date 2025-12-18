@@ -68,6 +68,22 @@ class SubtitleGenerator:
         self.beam_size = args.beam_size
         self.workers = args.workers
         self.force_cpu = args.force_cpu
+        self.vad = args.vad
+        self.vad_min_silence_duration_ms = args.vad_min_silence_duration_ms
+
+        # MacOS 环境自动检测与修正
+        if sys.platform == "darwin":
+            if self.device == "cuda":
+                logger.warning("MacOS 不支持 CUDA 加速，已强制切换为 CPU 模式")
+                self.force_cpu = True
+            elif self.device == "auto" and not self.force_cpu:
+                # 在 auto 模式下，如果是 Mac，直接默认用 CPU，避免 auto 尝试加载 CUDA 库导致报错
+                logger.info("检测到 MacOS 环境，默认使用 CPU 模式")
+                self.force_cpu = True
+            
+            # MacOS 上 compute_type 建议使用 int8 或 float32，避免 float16 可能的问题
+            if self.compute_type == "default" or self.compute_type == "auto":
+                self.compute_type = "int8"
         
         # 统计信息
         self.stats = {
@@ -104,7 +120,11 @@ class SubtitleGenerator:
                 self.force_cpu = True
                 self.device = "cpu"
                 self.compute_type = "int8" # CPU通常使用int8
-                self.load_model()
+                try:
+                    self.load_model()
+                except RuntimeError:
+                     # 避免递归死循环，如果重试还是失败，则抛出异常
+                     raise RuntimeError("CPU模式重试加载失败")
             else:
                 raise RuntimeError("无法加载模型，程序退出")
 
@@ -210,7 +230,9 @@ class SubtitleGenerator:
             segments_generator, info = self.model.transcribe(
                 temp_audio_path, 
                 beam_size=self.beam_size,
-                word_timestamps=False # 简单起见，暂不开启词级时间戳，除非需要更精细对齐
+                word_timestamps=False, # 简单起见，暂不开启词级时间戳，除非需要更精细对齐
+                vad_filter=self.vad,
+                vad_parameters=dict(min_silence_duration_ms=self.vad_min_silence_duration_ms) if self.vad else None
             )
             
             # 强制转换生成器为列表以获取所有段落
@@ -316,7 +338,7 @@ def main():
     parser.add_argument("--input_dir", "-i", type=str, default="uploads",
                         help="输入视频目录 (默认: uploads)")
     parser.add_argument("--model_size", "-m", type=str, default="large-v2",
-                        choices=["tiny", "base", "small", "medium", "large", "large-v2", "large-v3"],
+                        choices=["tiny", "base", "small", "medium", "large", "large-v2", "large-v3", "large-v3-turbo"],
                         help="Whisper模型大小 (默认: large-v2)")
     parser.add_argument("--device", "-d", type=str, default="auto",
                         choices=["cpu", "cuda", "auto"],
@@ -332,6 +354,10 @@ def main():
                         help="强制使用CPU模式 (当GPU不可用或显存不足时)")
     parser.add_argument("--log_file", "-l", type=str, default="subtitle_gen.log",
                         help="日志文件路径 (默认: subtitle_gen.log)")
+    parser.add_argument("--vad", action="store_true",
+                        help="启用语音活动检测 (VAD) 过滤静音片段")
+    parser.add_argument("--vad_min_silence_duration_ms", type=int, default=2000,
+                        help="VAD 最小静音时长 (毫秒)，默认 2000ms")
     
     args = parser.parse_args()
     
@@ -342,6 +368,12 @@ def main():
     
     # 设置日志
     setup_logging(args.log_file)
+
+    # 打印执行参数
+    logger.info("=== 任务参数配置 ===")
+    for arg, value in vars(args).items():
+        logger.info(f"{arg}: {value}")
+    logger.info("====================")
     
     # 运行生成器
     try:

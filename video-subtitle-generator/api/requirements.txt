@@ -29,8 +29,23 @@ sqlalchemy==2.0.21
 werkzeug==2.3.7
 tqdm==4.66.1
 
+# 浏览器自动化
+playwright
 
-# 测试框架
+requests
+
+funasr>=1.0.0
+modelscope>=1.10.0
+torch
+torchaudio
+
+
+# Transformers
+transformers
+accelerate
+sentencepiece
+protobuf
+
 pytest==7.4.2
 pytest-cov==4.1.0
 pytest-mock==3.11.1
