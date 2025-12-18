@@ -253,17 +253,27 @@ class DeepLWebTranslator:
                 else:
                     missing_indices.append(i)
             
-            # 如果有缺失，对缺失的部分进行降级处理 (逐条翻译 -> 递归批量补翻)
+            # 如果有缺失，对缺失的部分进行降级处理 (逐条翻译)
             if missing_indices:
-                logger.warning(f"批次中有 {len(missing_indices)}/{len(subs_list)} 条字幕未匹配到序号，尝试补翻...")
+                logger.warning(f"批次中有 {len(missing_indices)}/{len(subs_list)} 条字幕未匹配到序号，切换单行模式补翻...")
                 logger.debug(f"原文片段: {merged_text[:200]}...")
                 logger.debug(f"译文片段: {trans_text[:200]}...")
                 
-                # 收集所有缺失的 (global_index, sub) 元组
-                missing_subs_with_idx = [subs_with_idx[i] for i in missing_indices]
-                
-                # 递归调用 process_buffer 处理缺失的部分
-                await process_buffer(missing_subs_with_idx)
+                for idx, i in enumerate(missing_indices):
+                    # 获取原始信息
+                    global_idx, sub = subs_with_idx[i]
+                    
+                    logger.info(f"  > 正在补翻 [{idx+1}/{len(missing_indices)}]: {sub.content[:20]}...")
+                    
+                    # 单行翻译
+                    # 注意：单行翻译不需要加序号标签，直接翻内容效果最好
+                    t = await self.translate_text(sub.content)
+                    
+                    # 存入结果
+                    translated_map[global_idx] = t
+                    
+                    # 随机延时
+                    await asyncio.sleep(random.uniform(1, 2))
             await asyncio.sleep(random.uniform(2, 5))
 
         # Main loop with smart batching
