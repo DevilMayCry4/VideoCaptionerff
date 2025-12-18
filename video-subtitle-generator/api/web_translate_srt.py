@@ -5,6 +5,7 @@ DeepL Web 翻译脚本 (无 Key 版本)
 注意：仅供学习研究，DeepL 网页版有严格的反爬策略和字符限制。
 """
 
+import asyncio
 import os
 import sys
 import argparse
@@ -13,7 +14,7 @@ import time
 import random
 import srt
 from tqdm import tqdm
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 from typing import List
 import re
 
@@ -49,40 +50,40 @@ class DeepLWebTranslator:
         self.context = None
         self.page = None
 
-    def __enter__(self):
-        self.start_browser()
+    async def __aenter__(self):
+        await self.start_browser()
         return self
     
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.close_browser()
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.close_browser()
 
-    def start_browser(self):
+    async def start_browser(self):
         """启动浏览器"""
         logger.info("正在启动浏览器...")
-        self.playwright = sync_playwright().start()
-        self.browser = self.playwright.chromium.launch(headless=self.headless)
-        self.context = self.browser.new_context(
+        self.playwright = await async_playwright().start()
+        self.browser = await self.playwright.chromium.launch(headless=self.headless)
+        self.context = await self.browser.new_context(
             user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
-        self.page = self.context.new_page()
+        self.page = await self.context.new_page()
         
         # 预加载 DeepL 页面，设置语言方向
         try:
             # 直接进入 JA -> ZH 模式
-            self.page.goto("https://www.deepl.com/zh/translator#ja/zh/")
-            # 等待输入框加载
-            self.page.wait_for_selector("[data-testid='translator-source-input']", timeout=15000)
+            await self.page.goto("https://www.deepl.com/zh/translator#ja/zh/")
+            # 等待输入框加载 (DeepL 网页版输入框通常是 div[contenteditable])
+            await self.page.wait_for_selector("div[contenteditable]", timeout=15000)
             logger.info("DeepL 网页加载成功")
         except Exception as e:
             logger.error(f"无法访问 DeepL: {e}")
-            # self.close_browser()
+            # await self.close_browser()
             sys.exit(1)
 
-    def close_browser(self):
+    async def close_browser(self):
         """关闭浏览器"""
-        if self.context: self.context.close()
-        if self.browser: self.browser.close()
-        if self.playwright: self.playwright.stop()
+        if self.context: await self.context.close()
+        if self.browser: await self.browser.close()
+        if self.playwright: await self.playwright.stop()
 
     def load_subtitles(self) -> List[srt.Subtitle]:
         """加载 SRT 文件"""
@@ -94,7 +95,7 @@ class DeepLWebTranslator:
             logger.error(f"读取字幕文件失败: {e}")
             sys.exit(1)
 
-    def translate_text(self, text: str) -> str:
+    async def translate_text(self, text: str) -> str:
         """使用网页版翻译文本"""
         if not text.strip():
             return ""
@@ -106,16 +107,16 @@ class DeepLWebTranslator:
             target_selector = "div[contenteditable] >> nth=1"
             
             # 清空输入框 (聚焦 -> 全选 -> 删除)
-            self.page.click(source_selector)
-            self.page.keyboard.press("Meta+A") # Mac use Meta, Windows use Control
-            self.page.keyboard.press("Backspace")
+            await self.page.click(source_selector)
+            await self.page.keyboard.press("Meta+A") # Mac use Meta, Windows use Control
+            await self.page.keyboard.press("Backspace")
             
             # 填入新文本
             # 使用 fill 而不是 type，速度更快且稳定
-            self.page.fill(source_selector, text)
+            await self.page.fill(source_selector, text)
             
             # 增加一个初始等待，确保DeepL开始处理
-            time.sleep(2) 
+            await asyncio.sleep(2) 
             
             # 轮询检查结果是否稳定
             prev_text = ""
@@ -125,7 +126,7 @@ class DeepLWebTranslator:
                 # 尝试获取文本内容
                 # 因为是 div[contenteditable]，必须用 inner_text，input_value 会报错
                 try:
-                    current_text = self.page.inner_text(target_selector)
+                    current_text = await self.page.inner_text(target_selector)
                 except Exception as e:
                     # 如果找不到目标元素，可能是页面结构变了或者还没加载出来
                     logger.debug(f"获取译文失败: {e}")
@@ -133,7 +134,7 @@ class DeepLWebTranslator:
                 
                 # 过滤无效状态
                 if not current_text or "[...]" in current_text:
-                    time.sleep(0.5)
+                    await asyncio.sleep(0.5)
                     continue
                 
                 if current_text != prev_text:
@@ -147,7 +148,7 @@ class DeepLWebTranslator:
                         if current_text.strip():
                             return current_text
                 
-                time.sleep(0.5)
+                await asyncio.sleep(0.5)
             
             # 如果超时，返回最后获取到的内容
             return prev_text
@@ -156,19 +157,19 @@ class DeepLWebTranslator:
             logger.error(f"网页翻译失败: {e}")
             # 尝试刷新页面恢复
             try:
-                self.page.reload()
-                self.page.wait_for_selector("[data-testid='translator-source-input']", timeout=15000)
+                await self.page.reload()
+                await self.page.wait_for_selector("[data-testid='translator-source-input']", timeout=15000)
             except:
                 pass
             return text # 失败返回原文
 
-    def process_file(self, input_path: str, output_path: str = None):
+    async def process_file(self, input_path: str, output_path: str = None):
         """处理单个文件"""
         self.input_file = input_path
         self.output_file = output_path
-        self.process()
+        await self.process()
 
-    def process(self):
+    async def process(self):
         """执行翻译流程 (内部方法)"""
         if not self.input_file:
             return
@@ -176,14 +177,11 @@ class DeepLWebTranslator:
         logger.info(f"正在读取字幕文件: {self.input_file}")
         subs = self.load_subtitles()
         
-        self.start_browser()
+        # 浏览器在外部启动
+        # self.start_browser()
         
         new_subs = []
         pbar = tqdm(total=len(subs))
-        
-        # 智能合并文本以减少页面跳转次数
-        # DeepL 网页版每次跳转都需要加载，频繁跳转效率极低且容易被封
-        # 我们将字幕合并成大段文本进行翻译，然后拆分
         
         buffer_subs = []
         buffer_len = 0
@@ -191,7 +189,7 @@ class DeepLWebTranslator:
         translated_map = {}
         
         # 内部函数：处理缓冲区
-        def process_buffer(subs_list):
+        async def process_buffer(subs_list):
             if not subs_list: return
             
             # 1. 构建带【序号+原文】符号的文本
@@ -210,7 +208,7 @@ class DeepLWebTranslator:
             logger.info(f"正在翻译批次，包含 {len(subs_list)} 条字幕，共 {len(merged_text)} 字符")
             
             # 2. 发送翻译
-            trans_text = self.translate_text(merged_text)
+            trans_text = await self.translate_text(merged_text)
             
             # 3. 解析结果
             # 使用正则提取【序号+译文】中的内容
@@ -248,28 +246,28 @@ class DeepLWebTranslator:
                 for idx in missing_indices:
                     s = subs_list[idx]
                     # 补翻时不带序号，直接翻内容
-                    t = self.translate_text(s.content)
+                    t = await self.translate_text(s.content)
                     translated_map[s.index] = t
-                    time.sleep(random.uniform(1, 2))
+                    await asyncio.sleep(random.uniform(1, 2))
             
             # 批次间延时
-            time.sleep(random.uniform(2, 5))
+            await asyncio.sleep(random.uniform(2, 5))
 
         for sub in subs:
-            # 简单的长度估算
-            content_len = len(sub.content)
+            # 计算长度：内容长度 + 符号长度(2) + 换行符(1)
+            content_len = len(sub.content) + 3
             
             if buffer_len + content_len > self.max_chars:
-                process_buffer(buffer_subs)
+                await process_buffer(buffer_subs)
                 pbar.update(len(buffer_subs))
                 buffer_subs = []
                 buffer_len = 0
             
             buffer_subs.append(sub)
-            buffer_len += content_len + 1 # +1 for newline
+            buffer_len += content_len
             
         # 处理剩余
-        process_buffer(buffer_subs)
+        await process_buffer(buffer_subs)
         pbar.update(len(buffer_subs))
         pbar.close()
         
@@ -301,7 +299,7 @@ class DeepLWebTranslator:
             
         logger.info(f"翻译完成: {output_path}")
 
-def process_batch(args):
+async def process_batch(args):
     """批量处理"""
     input_path = args.input_path
     
@@ -322,19 +320,19 @@ def process_batch(args):
     logger.info(f"共找到 {len(files_to_process)} 个文件待处理")
     
     # 使用上下文管理器复用浏览器
-    with DeepLWebTranslator(args) as translator:
+    async with DeepLWebTranslator(args) as translator:
         for i, file_path in enumerate(files_to_process):
             logger.info(f"[{i+1}/{len(files_to_process)}] 处理: {file_path}")
             try:
                 # 如果指定了输出文件且输入是单个文件，则使用指定的输出路径
                 # 如果是目录，则自动生成输出路径
                 output_file = args.output_file if (len(files_to_process) == 1 and args.output_file) else None
-                translator.process_file(file_path, output_file)
+                await translator.process_file(file_path, output_file)
             except Exception as e:
                 logger.error(f"处理文件失败 {file_path}: {e}")
                 # 出错后尝试重启浏览器上下文，防止页面崩溃影响下一个
                 try:
-                    translator.page.reload()
+                    await translator.page.reload()
                 except:
                     pass
 
@@ -357,7 +355,7 @@ def main():
     if not os.path.exists(os.path.expanduser("~/.cache/ms-playwright")) and not os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
          print("提示: 首次运行可能需要安装浏览器内核，请执行: playwright install chromium")
     
-    process_batch(args)
+    asyncio.run(process_batch(args))
 
 if __name__ == "__main__":
     main()
