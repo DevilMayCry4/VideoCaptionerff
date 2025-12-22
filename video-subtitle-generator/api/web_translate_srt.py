@@ -73,7 +73,7 @@ class DeepLWebTranslator:
             # 根据 t.html 中的 SEO 早期文本 (seoEarlyTexts)，日语是 'ja'，中文是 'zh'
             # 构造 URL: https://www.deepl.com/zh/translator#ja/zh/
             # #ja/zh/ 表示源语言日语，目标语言中文
-            await self.page.goto("https://www.deepl.com/zh")
+            await self.page.goto("https://www.deepl.com/zh/translator#ja/zh/")
             # 等待输入框加载 (DeepL 网页版输入框通常是 div[contenteditable])
             await self.page.wait_for_selector("div[contenteditable]", timeout=15000)
             logger.info("DeepL 网页加载成功")
