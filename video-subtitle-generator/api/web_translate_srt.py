@@ -43,6 +43,7 @@ class DeepLWebTranslator:
         self.bilingual = args.bilingual
         self.headless = not args.show_browser
         self.max_chars = 1500 # 用户要求控制在1500字以内
+        self.single_mode = args.single_mode # 是否强制使用单行模式
         
         # 浏览器实例
         self.playwright = None
@@ -201,6 +202,14 @@ class DeepLWebTranslator:
         async def process_buffer(subs_with_idx):
             if not subs_with_idx: return
             
+            # 如果开启了单行模式，直接在这里分发
+            if self.single_mode:
+                for global_idx, s in subs_with_idx:
+                    t = await self.translate_text(s.content)
+                    translated_map[global_idx] = t
+                    await asyncio.sleep(random.uniform(1, 2))
+                return
+
             # 解包
             subs_list = [item[1] for item in subs_with_idx]
             
@@ -401,6 +410,7 @@ def main():
     parser.add_argument("input_path", help="输入 SRT 文件或目录路径")
     parser.add_argument("--output_file", "-o", help="输出文件 (仅处理单个文件时有效)")
     parser.add_argument("--bilingual", action="store_true", help="输出双语字幕")
+    parser.add_argument("--single-mode", action="store_true", help="强制使用逐行翻译模式 (速度较慢但最稳定)")
     parser.add_argument("--show_browser", action="store_true", help="显示浏览器窗口 (调试用)")
     
     args = parser.parse_args()
